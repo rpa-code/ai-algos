@@ -1,0 +1,87 @@
+    // Detect anomalies or outliers in a dataset
+    
+    public static Dataset<Row> anomalyDetection(Dataset<Row> inputDS, String inputDataList) {
+
+ 
+
+        LOGGER.info(" Anomaly Detection algorithm ");
+
+ 
+
+        Dataset<Row> dataChangeDS;
+
+        String stmt;
+
+ 
+
+        // split by  ID and sort by timestamp ASC
+
+        WindowSpec windowSpec = Window
+
+                .partitionBy(CASSANDRA_ID)
+
+                .orderBy("timestamp");
+
+ 
+
+        //iterate over rows keeping count each time the state of the object changes
+
+        Column changeind = sum((not(lag(column("objid"), 1)
+
+                .over(windowSpec)
+
+                .eqNullSafe(column("objid"))))
+
+                .cast(DataTypes.IntegerType))
+
+                .over(windowSpec);
+
+ 
+
+        // add the above counting as a column to the input dataset
+
+        dataChangeDS = inputDS.withColumn("changeind", changeind);
+
+ 
+
+        Column exittime = coalesce(
+
+                (lead("timestamp", 1).over(windowSpec)), column("maxtimestamp"));
+
+ 
+
+        dataChangeDS = dataChangeDS
+
+                .groupBy(CASSANDRA_ASSET_ID, "objid", "changeind")
+
+                .agg(min("timestamp").alias("timestamp"), max("timestamp").alias("maxtimestamp"))
+
+                .drop("changeind")
+
+                .withColumn("exittime", exittime)
+
+                .withColumnRenamed("timestamp", "entrytime")
+
+                .withColumn("duration",
+
+                        ((column("exittime").minus(column("entrytime"))).divide(1000))
+
+                                .cast(DataTypes.IntegerType))
+
+                .drop("maxtimestamp");
+
+ 
+
+        if (!isNullOrEmpty(inputDataList)) {
+
+            stmt = "objid in (" + inputDataList + ")";
+
+            dataChangeDS = dataChangeDS.where(stmt);
+
+        }
+
+ 
+
+        return dataChangeDS;
+
+    }
